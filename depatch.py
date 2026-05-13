@@ -49,8 +49,8 @@ class PatchTrainerConfig:
     iou_match_thres: float = 0.30
     acc_iou_weight: float = 3.0
     class_id: int = 0
-    nps_weight: float = 0.0
-    tv_weight: float = 2.5
+    nps_weight: float = 0.001
+    tv_weight: float = 0.25
     printable_colors: str | None = None
     topk: int = 200
     temperature: float = 0.10
@@ -1236,8 +1236,8 @@ def parse_args() -> PatchTrainerConfig:
     parser.add_argument("--iou-match-thres", type=float, default=0.30)
     parser.add_argument("--acc-iou-weight", type=float, default=3.0)
     parser.add_argument("--class-id", type=int, default=0)
-    parser.add_argument("--nps-weight", type=float, default=0.0)
-    parser.add_argument("--tv-weight", type=float, default=2.5)
+    parser.add_argument("--nps-weight", type=float, default=0.001)
+    parser.add_argument("--tv-weight", type=float, default=0.25)
     parser.add_argument("--printable-colors", default=None)
     parser.add_argument("--topk", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.10)
