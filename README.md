@@ -81,10 +81,27 @@ Open `notebooks/DePatch_CelebFBI.ipynb` and select the
 
 ## CUDA wheel selection
 
-`setup_venv.sh` installs PyTorch from CUDA 12.1 wheels by default:
+`setup_venv.sh` installs matching PyTorch and TorchVision CUDA 12.1 wheels by
+default. It automatically uses `python3.11` when available. On Ubuntu/Debian,
+it tries to install `python3.11` and `python3.11-venv` through `apt-get` if
+they are missing:
 
 ```bash
-TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121 ./setup_venv.sh
+./setup_venv.sh
 ```
 
-For a different CUDA/PyTorch wheel index, override `TORCH_INDEX_URL`.
+You can still choose a specific Python 3.10-3.12 interpreter explicitly:
+
+```bash
+PYTHON_BIN=python3.11 ./setup_venv.sh
+```
+
+For a different CUDA/PyTorch wheel index or Python version, override
+`TORCH_INDEX_URL` and `TORCH_PACKAGES`:
+
+```bash
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+TORCH_PACKAGES="torch torchvision" \
+PYTHON_BIN=python3.11 \
+./setup_venv.sh
+```
