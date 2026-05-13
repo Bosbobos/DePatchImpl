@@ -61,6 +61,14 @@ Download and prepare dataset only:
 ./download_dataset.sh
 ```
 
+If the Hugging Face dataset requires authentication, enter an HF token when
+prompted. Press Enter to continue without a token. You can also provide it
+non-interactively:
+
+```bash
+HF_TOKEN=hf_... ./download_dataset.sh
+```
+
 Start training:
 
 ```bash

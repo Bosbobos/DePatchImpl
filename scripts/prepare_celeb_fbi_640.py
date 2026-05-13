@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -34,6 +35,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None, help="Optional max number of images.")
     parser.add_argument("--overwrite", action="store_true", help="Rewrite existing images.")
     parser.add_argument("--no-metadata", action="store_true", help="Save only images, without metadata.csv.")
+    parser.add_argument(
+        "--hf-token",
+        default=os.environ.get("HF_TOKEN"),
+        help="Optional Hugging Face token. Defaults to HF_TOKEN.",
+    )
     return parser.parse_args()
 
 
@@ -56,7 +62,10 @@ def main() -> None:
     if len(fill_parts) != 3 or any(part < 0 or part > 255 for part in fill_parts):
         raise ValueError("--fill must be R,G,B values in 0..255")
 
-    dataset = load_dataset(args.dataset)
+    load_kwargs = {}
+    if args.hf_token:
+        load_kwargs["token"] = args.hf_token
+    dataset = load_dataset(args.dataset, **load_kwargs)
     rows_written = 0
 
     metadata_path = output_dir / "metadata.csv"
