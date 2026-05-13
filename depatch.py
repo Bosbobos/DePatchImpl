@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset, Subset
+from tqdm.auto import tqdm
 from ultralytics import YOLO
 
 
@@ -774,7 +775,8 @@ class DePatchTrainer:
         total_tv = 0.0
         batches = 0
 
-        for images, paths in loader:
+        progress = tqdm(loader, desc=f"Training epoch {self.current_epoch}", unit="batch", leave=False)
+        for images, paths in progress:
             optimizer.zero_grad(set_to_none=True)
             clean_boxes = [self.get_or_detect_boxes(self.train_dataset, images[i], path) for i, path in enumerate(paths)]
 
@@ -800,6 +802,11 @@ class DePatchTrainer:
             total_tv += float(tv.detach().cpu())
             batches += 1
             self.optimizer_steps += 1
+            progress.set_postfix(
+                loss=total_loss / batches,
+                attack=total_attack / batches,
+                refresh=False,
+            )
             del images, patched, attack_loss, nps, tv, loss
             if (
                 self.config.cleanup_batch_interval
@@ -903,7 +910,7 @@ class DePatchTrainer:
         successes = 0
 
         with torch.no_grad():
-            for images, paths in loader:
+            for images, paths in tqdm(loader, desc=f"Evaluating {prefix}", unit="batch", leave=False):
                 clean_boxes = [self.get_or_detect_boxes(dataset, images[i], path) for i, path in enumerate(paths)]
                 images_device = images.to(self.device)
                 if self.config.placement_mode == "random_image":
@@ -943,7 +950,7 @@ class DePatchTrainer:
         )
         total = 0
         missing_total = 0
-        for images, paths in loader:
+        for images, paths in tqdm(loader, desc=f"Caching boxes ({label})", unit="batch", leave=False):
             for i, path in enumerate(paths):
                 if path not in self.clean_cache:
                     self.get_or_detect_boxes(dataset, images[i], path)
@@ -951,7 +958,7 @@ class DePatchTrainer:
             total += len(paths)
             del images
             self.release_memory()
-        print(f"Cached clean boxes for {label}: {missing_total} new / {total} total")
+        tqdm.write(f"Cached clean boxes for {label}: {missing_total} new / {total} total")
 
     @staticmethod
     def tensor_to_uint8(image: Tensor) -> np.ndarray:
@@ -992,7 +999,12 @@ class DePatchTrainer:
         if self.config.iterations is not None:
             iterator = iter(loader)
             start_iteration = max(1, self.config.start_epoch)
-            for iteration in range(start_iteration, self.config.iterations + 1):
+            iteration_progress = tqdm(
+                range(start_iteration, self.config.iterations + 1),
+                desc="Training",
+                unit="iter",
+            )
+            for iteration in iteration_progress:
                 self.current_epoch = iteration
                 try:
                     batch = next(iterator)
@@ -1001,6 +1013,11 @@ class DePatchTrainer:
                     batch = next(iterator)
 
                 train_metrics = self.train_batch(batch, optimizer)
+                iteration_progress.set_postfix(
+                    loss=train_metrics["train_loss"],
+                    attack=train_metrics["attack_loss"],
+                    refresh=False,
+                )
                 should_eval = (
                     iteration == 1
                     or iteration == self.config.iterations
@@ -1038,7 +1055,7 @@ class DePatchTrainer:
                     or iteration % max(1, self.config.log_interval) == 0
                 )
                 if should_log:
-                    print(
+                    tqdm.write(
                         f"iter={iteration:05d} train_loss={metrics['train_loss']:.5f} "
                         f"attack_loss={metrics['attack_loss']:.5f} nps_loss={metrics['nps_loss']:.5f} "
                         f"tv_loss={metrics['tv_loss']:.5f} decouple=({decouple_n},{decouple_r:.2f}) "
@@ -1054,9 +1071,15 @@ class DePatchTrainer:
             return self.history
 
         start_epoch = max(1, self.config.start_epoch)
-        for epoch in range(start_epoch, self.config.epochs + 1):
+        epoch_progress = tqdm(range(start_epoch, self.config.epochs + 1), desc="Training", unit="epoch")
+        for epoch in epoch_progress:
             self.current_epoch = epoch
             train_metrics = self.train_epoch(loader, optimizer)
+            epoch_progress.set_postfix(
+                loss=train_metrics["train_loss"],
+                attack=train_metrics["attack_loss"],
+                refresh=False,
+            )
             should_eval = epoch == 1 or epoch == self.config.epochs or epoch % max(1, self.config.eval_interval) == 0
             if should_eval:
                 train_asr_metrics = self.evaluate_asr(self.train_eval_dataset, "train")
@@ -1088,7 +1111,7 @@ class DePatchTrainer:
                 or epoch % max(1, self.config.log_interval) == 0
             )
             if should_log:
-                print(
+                tqdm.write(
                     f"epoch={epoch:03d} train_loss={metrics['train_loss']:.5f} "
                     f"attack_loss={metrics['attack_loss']:.5f} nps_loss={metrics['nps_loss']:.5f} "
                     f"tv_loss={metrics['tv_loss']:.5f} decouple=({decouple_n},{decouple_r:.2f}) "
