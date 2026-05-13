@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
+import json
 import math
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import torch
@@ -23,6 +24,7 @@ DEFAULT_TRAIN_DIR = "datasets/celeb_fbi_640/images"
 DEFAULT_VAL_DIR = "datasets/celeb_fbi_640/images"
 DEFAULT_FALLBACK_WEIGHTS = "yolo11s.pt"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+BOX_CACHE_VERSION = 1
 
 
 @dataclass
@@ -298,6 +300,9 @@ class DePatchTrainer:
         self.train_eval_dataset = self._limit_dataset(self.train_dataset, config.train_eval_samples)
         self.val_eval_dataset = self._limit_dataset(self.val_dataset, config.val_eval_samples)
         self.clean_cache: dict[str, np.ndarray] = {}
+        self.clean_cache_dirty = False
+        self.clean_cache_path = self.output_dir / "clean_boxes_cache.json"
+        self.load_clean_box_cache()
         self.load_existing_history()
 
     def load_resume_patch(self, patch_path: str | None) -> None:
@@ -353,6 +358,57 @@ class DePatchTrainer:
                 self.best_loss = train_loss
         if self.history:
             print(f"Loaded {len(self.history)} history rows from: {path}")
+
+    def clean_box_cache_metadata(self) -> dict:
+        return {
+            "version": BOX_CACHE_VERSION,
+            "weights": str(self.weights),
+            "class_id": self.config.class_id,
+            "conf_thres": self.config.conf_thres,
+            "max_boxes_per_image": self.config.max_boxes_per_image,
+        }
+
+    def load_clean_box_cache(self) -> None:
+        if not self.clean_cache_path.exists():
+            return
+        try:
+            with self.clean_cache_path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            tqdm.write(f"Ignoring unreadable clean box cache: {self.clean_cache_path} ({exc})")
+            return
+
+        if payload.get("metadata") != self.clean_box_cache_metadata():
+            tqdm.write(f"Ignoring stale clean box cache: {self.clean_cache_path}")
+            return
+
+        entries = payload.get("boxes", {})
+        if not isinstance(entries, dict):
+            tqdm.write(f"Ignoring invalid clean box cache: {self.clean_cache_path}")
+            return
+
+        loaded = 0
+        for image_path, boxes in entries.items():
+            array = np.asarray(boxes, dtype=np.float32)
+            if array.ndim != 2 or array.shape[1] != 4:
+                continue
+            self.clean_cache[image_path] = array
+            loaded += 1
+        if loaded:
+            tqdm.write(f"Loaded {loaded} clean box cache entries from: {self.clean_cache_path}")
+
+    def save_clean_box_cache(self, force: bool = False) -> None:
+        if not self.clean_cache_dirty and not force:
+            return
+        payload = {
+            "metadata": self.clean_box_cache_metadata(),
+            "boxes": {path: boxes.astype(float).tolist() for path, boxes in sorted(self.clean_cache.items())},
+        }
+        tmp_path = self.clean_cache_path.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        tmp_path.replace(self.clean_cache_path)
+        self.clean_cache_dirty = False
 
     @staticmethod
     def _parse_history_value(value: str) -> int | float | str:
@@ -435,7 +491,37 @@ class DePatchTrainer:
             return label_boxes
         boxes = self.detect_person_boxes([image])[0]
         self.clean_cache[path] = boxes
+        self.clean_cache_dirty = True
         return boxes
+
+    def get_or_detect_boxes_batch(self, dataset: Dataset, images: Tensor, paths: Sequence[str]) -> list[np.ndarray]:
+        results: list[np.ndarray | None] = []
+        detect_indices: list[int] = []
+        detect_images: list[Tensor] = []
+
+        for index, path in enumerate(paths):
+            if path in self.clean_cache:
+                results.append(self.clean_cache[path])
+                continue
+
+            label_boxes = self.read_label_boxes(dataset, path)
+            if label_boxes is not None:
+                self.clean_cache[path] = label_boxes
+                results.append(label_boxes)
+                continue
+
+            results.append(None)
+            detect_indices.append(index)
+            detect_images.append(images[index])
+
+        if detect_images:
+            detected_boxes = self.detect_person_boxes(detect_images)
+            for index, boxes in zip(detect_indices, detected_boxes):
+                self.clean_cache[paths[index]] = boxes
+                results[index] = boxes
+            self.clean_cache_dirty = True
+
+        return [boxes if boxes is not None else np.zeros((0, 4), dtype=np.float32) for boxes in results]
 
     @property
     def patch(self) -> Tensor:
@@ -778,7 +864,7 @@ class DePatchTrainer:
         progress = tqdm(loader, desc=f"Training epoch {self.current_epoch}", unit="batch", leave=False)
         for images, paths in progress:
             optimizer.zero_grad(set_to_none=True)
-            clean_boxes = [self.get_or_detect_boxes(self.train_dataset, images[i], path) for i, path in enumerate(paths)]
+            clean_boxes = self.get_or_detect_boxes_batch(self.train_dataset, images, paths)
 
             images = images.to(self.device, non_blocking=True)
             if self.config.placement_mode == "random_image":
@@ -824,7 +910,7 @@ class DePatchTrainer:
     def train_batch(self, batch: tuple[Tensor, tuple[str, ...]], optimizer: torch.optim.Optimizer) -> dict:
         images, paths = batch
         optimizer.zero_grad(set_to_none=True)
-        clean_boxes = [self.get_or_detect_boxes(self.train_dataset, images[i], path) for i, path in enumerate(paths)]
+        clean_boxes = self.get_or_detect_boxes_batch(self.train_dataset, images, paths)
 
         images = images.to(self.device, non_blocking=True)
         if self.config.placement_mode == "random_image":
@@ -911,7 +997,7 @@ class DePatchTrainer:
 
         with torch.no_grad():
             for images, paths in tqdm(loader, desc=f"Evaluating {prefix}", unit="batch", leave=False):
-                clean_boxes = [self.get_or_detect_boxes(dataset, images[i], path) for i, path in enumerate(paths)]
+                clean_boxes = self.get_or_detect_boxes_batch(dataset, images, paths)
                 images_device = images.to(self.device)
                 if self.config.placement_mode == "random_image":
                     patched = self.place_random_image_patch(images_device, deterministic=True).detach().cpu()
@@ -951,13 +1037,12 @@ class DePatchTrainer:
         total = 0
         missing_total = 0
         for images, paths in tqdm(loader, desc=f"Caching boxes ({label})", unit="batch", leave=False):
-            for i, path in enumerate(paths):
-                if path not in self.clean_cache:
-                    self.get_or_detect_boxes(dataset, images[i], path)
-                    missing_total += 1
+            missing_total += sum(1 for path in paths if path not in self.clean_cache)
+            self.get_or_detect_boxes_batch(dataset, images, paths)
             total += len(paths)
             del images
             self.release_memory()
+        self.save_clean_box_cache()
         tqdm.write(f"Cached clean boxes for {label}: {missing_total} new / {total} total")
 
     @staticmethod
@@ -1048,6 +1133,7 @@ class DePatchTrainer:
                 self.history.append(metrics)
                 self.save_latest_and_maybe_best(iteration, metrics)
                 self.save_history()
+                self.save_clean_box_cache()
 
                 should_log = (
                     iteration == start_iteration
@@ -1105,6 +1191,7 @@ class DePatchTrainer:
             self.history.append(metrics)
             self.save_latest_and_maybe_best(epoch, metrics)
             self.save_history()
+            self.save_clean_box_cache()
             should_log = (
                 epoch == start_epoch
                 or epoch == self.config.epochs
