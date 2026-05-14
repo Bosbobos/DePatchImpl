@@ -16,8 +16,18 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset, Subset
-from tqdm.auto import tqdm
 from ultralytics import YOLO
+
+try:
+    from IPython import get_ipython
+except Exception:
+    get_ipython = None
+
+shell = get_ipython() if get_ipython is not None else None
+if shell is not None and shell.__class__.__name__ == "ZMQInteractiveShell":
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 
 DEFAULT_TRAIN_DIR = "datasets/celeb_fbi_640/images"
@@ -449,6 +459,17 @@ class DePatchTrainer:
         return Subset(dataset, range(min(limit, len(dataset))))
 
     @staticmethod
+    def _dataset_paths(dataset: Dataset) -> list[str] | None:
+        if isinstance(dataset, Subset):
+            parent_paths = DePatchTrainer._dataset_paths(dataset.dataset)
+            if parent_paths is None:
+                return None
+            return [parent_paths[int(index)] for index in dataset.indices]
+        if isinstance(dataset, ImageFolderDataset):
+            return [str(path) for path in dataset.paths]
+        return None
+
+    @staticmethod
     def _dataset_label_path(dataset: Dataset, image_path: str) -> Path | None:
         current = dataset
         while isinstance(current, Subset):
@@ -488,6 +509,7 @@ class DePatchTrainer:
         label_boxes = self.read_label_boxes(dataset, path)
         if label_boxes is not None:
             self.clean_cache[path] = label_boxes
+            self.clean_cache_dirty = True
             return label_boxes
         boxes = self.detect_person_boxes([image])[0]
         self.clean_cache[path] = boxes
@@ -507,6 +529,7 @@ class DePatchTrainer:
             label_boxes = self.read_label_boxes(dataset, path)
             if label_boxes is not None:
                 self.clean_cache[path] = label_boxes
+                self.clean_cache_dirty = True
                 results.append(label_boxes)
                 continue
 
@@ -520,6 +543,7 @@ class DePatchTrainer:
                 self.clean_cache[paths[index]] = boxes
                 results[index] = boxes
             self.clean_cache_dirty = True
+            self.save_clean_box_cache()
 
         return [boxes if boxes is not None else np.zeros((0, 4), dtype=np.float32) for boxes in results]
 
@@ -1027,6 +1051,28 @@ class DePatchTrainer:
         return self.evaluate_asr(self.val_eval_dataset, "val")
 
     def cache_clean_boxes(self, dataset: Dataset, label: str) -> None:
+        dataset_paths = self._dataset_paths(dataset)
+        new_total = 0
+        if dataset_paths is not None:
+            missing_indices = []
+            for index, path in enumerate(dataset_paths):
+                if path in self.clean_cache:
+                    continue
+                label_boxes = self.read_label_boxes(dataset, path)
+                if label_boxes is not None:
+                    self.clean_cache[path] = label_boxes
+                    self.clean_cache_dirty = True
+                    new_total += 1
+                    continue
+                missing_indices.append(index)
+
+            if not missing_indices:
+                self.save_clean_box_cache()
+                tqdm.write(f"Cached clean boxes for {label}: {new_total} new / {len(dataset_paths)} total")
+                return
+
+            dataset = Subset(dataset, missing_indices)
+
         loader = DataLoader(
             dataset,
             batch_size=self.config.batch_size,
@@ -1043,7 +1089,8 @@ class DePatchTrainer:
             del images
             self.release_memory()
         self.save_clean_box_cache()
-        tqdm.write(f"Cached clean boxes for {label}: {missing_total} new / {total} total")
+        total_count = len(dataset_paths) if dataset_paths is not None else total
+        tqdm.write(f"Cached clean boxes for {label}: {new_total + missing_total} new / {total_count} total")
 
     @staticmethod
     def tensor_to_uint8(image: Tensor) -> np.ndarray:
@@ -1088,6 +1135,7 @@ class DePatchTrainer:
                 range(start_iteration, self.config.iterations + 1),
                 desc="Training",
                 unit="iter",
+                leave=False,
             )
             for iteration in iteration_progress:
                 self.current_epoch = iteration
@@ -1157,7 +1205,12 @@ class DePatchTrainer:
             return self.history
 
         start_epoch = max(1, self.config.start_epoch)
-        epoch_progress = tqdm(range(start_epoch, self.config.epochs + 1), desc="Training", unit="epoch")
+        epoch_progress = tqdm(
+            range(start_epoch, self.config.epochs + 1),
+            desc="Training",
+            unit="epoch",
+            leave=False,
+        )
         for epoch in epoch_progress:
             self.current_epoch = epoch
             train_metrics = self.train_epoch(loader, optimizer)
