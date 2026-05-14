@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-install_python311_with_apt() {
+apt_install() {
     if ! command -v apt-get >/dev/null 2>&1; then
         return 1
     fi
@@ -17,14 +17,28 @@ install_python311_with_apt() {
     fi
 
     "${sudo_cmd[@]}" apt-get update
-    "${sudo_cmd[@]}" apt-get install -y python3.11 python3.11-venv
+    "${sudo_cmd[@]}" apt-get install -y "$@"
+}
+
+ensure_venv_available() {
+    if "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local python_version
+    python_version="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+    apt_install "python${python_version}-venv" || apt_install python3-venv
 }
 
 if [ -z "${PYTHON_BIN:-}" ]; then
     if command -v python3.11 >/dev/null 2>&1; then
         PYTHON_BIN="python3.11"
-    elif install_python311_with_apt && command -v python3.11 >/dev/null 2>&1; then
-        PYTHON_BIN="python3.11"
+    elif command -v python3.12 >/dev/null 2>&1; then
+        PYTHON_BIN="python3.12"
     else
         PYTHON_BIN="python3"
     fi
@@ -50,6 +64,7 @@ if version >= (3, 13) and "TORCH_PACKAGES" not in os.environ:
     )
 PY
 
+ensure_venv_available
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 
