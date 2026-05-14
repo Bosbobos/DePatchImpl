@@ -344,8 +344,6 @@ class DePatchTrainer:
         print(f"Resumed patch from: {path}")
 
     def load_existing_history(self) -> None:
-        if self.config.start_epoch <= 1 and self.config.resume_patch is None:
-            return
         path = self.output_dir / "history.csv"
         if not path.exists():
             return
@@ -356,7 +354,7 @@ class DePatchTrainer:
             for row in reader:
                 parsed = {key: self._parse_history_value(value) for key, value in row.items()}
                 epoch = int(parsed.get("epoch", 0))
-                if epoch < max(1, self.config.start_epoch):
+                if self.config.start_epoch <= 1 or epoch < self.config.start_epoch:
                     loaded.append(parsed)
 
         self.history = loaded
@@ -368,6 +366,13 @@ class DePatchTrainer:
                 self.best_loss = train_loss
         if self.history:
             print(f"Loaded {len(self.history)} history rows from: {path}")
+
+    def next_history_step(self, key: str, requested_start: int) -> int:
+        start = max(1, requested_start)
+        if requested_start > 1 or not self.history:
+            return start
+        last_step = max(int(row.get(key, row.get("epoch", 0))) for row in self.history)
+        return max(start, last_step + 1)
 
     def clean_box_cache_metadata(self) -> dict:
         return {
@@ -1130,7 +1135,7 @@ class DePatchTrainer:
 
         if self.config.iterations is not None:
             iterator = iter(loader)
-            start_iteration = max(1, self.config.start_epoch)
+            start_iteration = self.next_history_step("iteration", self.config.start_epoch)
             iteration_progress = tqdm(
                 range(start_iteration, self.config.iterations + 1),
                 desc="Training",
@@ -1204,7 +1209,7 @@ class DePatchTrainer:
 
             return self.history
 
-        start_epoch = max(1, self.config.start_epoch)
+        start_epoch = self.next_history_step("epoch", self.config.start_epoch)
         epoch_progress = tqdm(
             range(start_epoch, self.config.epochs + 1),
             desc="Training",
