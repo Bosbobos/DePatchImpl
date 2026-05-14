@@ -959,7 +959,7 @@ class DePatchTrainer:
             return []
 
         batch = torch.stack(tensors, dim=0).to(self.device)
-        with torch.inference_mode():
+        with torch.no_grad():
             output = self.predict_model(batch)
             predictions = output[0] if isinstance(output, (tuple, list)) else output
         if predictions.ndim != 3:
