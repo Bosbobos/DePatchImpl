@@ -1140,7 +1140,6 @@ class DePatchTrainer:
                 range(start_iteration, self.config.iterations + 1),
                 desc="Training",
                 unit="iter",
-                leave=False,
             )
             for iteration in iteration_progress:
                 self.current_epoch = iteration
@@ -1214,7 +1213,6 @@ class DePatchTrainer:
             range(start_epoch, self.config.epochs + 1),
             desc="Training",
             unit="epoch",
-            leave=False,
         )
         for epoch in epoch_progress:
             self.current_epoch = epoch
