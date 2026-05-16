@@ -75,6 +75,33 @@ Start training:
 ./train_patch.sh
 ```
 
+If `outputs/depatch_celeb_fbi/latest_patch.pt` exists, training resumes from it
+automatically. Use a different `--output-dir` or remove the checkpoint to start
+from a fresh random patch.
+
+## Backup training artifacts to git
+
+In a separate terminal, run:
+
+```bash
+./scripts/git_backup_training_artifacts.sh
+```
+
+It commits and pushes the latest patch, best patch, history, and training
+progress every 20 minutes to a separate `training-backup` branch using a
+separate `.git-training-backup-worktree/` worktree, so backup commits do not
+mix with code commits. To run one backup immediately:
+
+```bash
+./scripts/git_backup_training_artifacts.sh --once
+```
+
+Override the destination branch if needed:
+
+```bash
+BACKUP_BRANCH=my-training-backup ./scripts/git_backup_training_artifacts.sh
+```
+
 ## Jupyter workflow
 
 After `./setup_venv.sh` and `./download_dataset.sh`, start Jupyter:

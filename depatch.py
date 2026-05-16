@@ -51,9 +51,17 @@ class PatchTrainerConfig:
     batch_size: int = 64
     lr: float = 0.03
     patch_size: int = 300
-    bbox_patch_scale: float = 0.35
+    bbox_patch_scale: float = 0.15
     placement_mode: str = "object"
     fixed_patch_size: int = 160
+    bbox_jitter_center_prob: float = 0.70
+    bbox_jitter_upper_prob: float = 0.22
+    bbox_jitter_center_x: float = 0.12
+    bbox_jitter_center_y: float = 0.10
+    bbox_jitter_upper_x: float = 0.18
+    bbox_jitter_upper_y: float = 0.18
+    bbox_jitter_lower_x: float = 0.14
+    bbox_jitter_lower_y: float = 0.12
     max_boxes_per_image: int = 14
     conf_thres: float = 0.25
     iou_match_thres: float = 0.30
@@ -294,7 +302,7 @@ class DePatchTrainer:
         initial_patch = torch.rand(3, patch_size, patch_size, device=self.device) * 0.10 + 0.45
         initial_patch = initial_patch.clamp(1e-4, 1 - 1e-4)
         self.patch_logits = nn.Parameter(torch.logit(initial_patch))
-        self.load_resume_patch(config.resume_patch)
+        self.load_resume_patch(self.resolve_resume_patch(config.resume_patch))
         self.printable_colors = load_printable_colors(config.printable_colors, self.device)
         self.history: list[dict] = []
         self.best_asr = -1.0
@@ -314,6 +322,14 @@ class DePatchTrainer:
         self.clean_cache_path = self.output_dir / "clean_boxes_cache.json"
         self.load_clean_box_cache()
         self.load_existing_history()
+
+    def resolve_resume_patch(self, patch_path: str | None) -> str | None:
+        if patch_path is not None:
+            return patch_path
+        latest = self.output_dir / "latest_patch.pt"
+        if latest.exists():
+            return str(latest)
+        return None
 
     def load_resume_patch(self, patch_path: str | None) -> None:
         if patch_path is None:
@@ -672,19 +688,46 @@ class DePatchTrainer:
                 if deterministic:
                     target_size = min(target_size, int(box_w), int(box_h))
 
-                cx = (x1 + x2) / 2.0
-                cy = (y1 + y2) / 2.0
                 if not deterministic:
-                    cx += random.uniform(-0.4, 0.4) * box_w
-                    cy += random.uniform(-0.4, 0.4) * box_h
+                    cx, cy = self.sample_bbox_patch_center(x1, y1, x2, y2, target_size)
                     angle = random.uniform(-20.0, 20.0)
                     patch_tensor, alpha_mask = self.transform_patch_for_training()
                 else:
+                    cx = (x1 + x2) / 2.0
+                    cy = (y1 + y2) / 2.0
                     angle = 0.0
                     patch_tensor, alpha_mask = self.patch, None
                 self._overlay_patch_at_(output, index, cx, cy, target_size, angle, patch_tensor, alpha_mask)
 
         return output.clamp(0.0, 1.0)
+
+    def sample_bbox_patch_center(self, x1: float, y1: float, x2: float, y2: float, target_size: int) -> tuple[float, float]:
+        box_w = max(1.0, x2 - x1)
+        box_h = max(1.0, y2 - y1)
+        roll = random.random()
+        center_prob = min(1.0, max(0.0, self.config.bbox_jitter_center_prob))
+        upper_prob = min(1.0, max(0.0, self.config.bbox_jitter_upper_prob))
+
+        if roll < center_prob:
+            base_x, base_y = 0.50, 0.50
+            jitter_x = self.config.bbox_jitter_center_x
+            jitter_y = self.config.bbox_jitter_center_y
+        elif roll < center_prob + upper_prob:
+            base_x, base_y = 0.50, 0.34
+            jitter_x = self.config.bbox_jitter_upper_x
+            jitter_y = self.config.bbox_jitter_upper_y
+        else:
+            base_x, base_y = 0.50, 0.68
+            jitter_x = self.config.bbox_jitter_lower_x
+            jitter_y = self.config.bbox_jitter_lower_y
+
+        cx = x1 + (base_x + random.uniform(-jitter_x, jitter_x)) * box_w
+        cy = y1 + (base_y + random.uniform(-jitter_y, jitter_y)) * box_h
+        half = target_size / 2.0
+        return (
+            min(max(cx, x1 + half), x2 - half) if box_w > target_size else (x1 + x2) / 2.0,
+            min(max(cy, y1 + half), y2 - half) if box_h > target_size else (y1 + y2) / 2.0,
+        )
 
     def place_random_image_patch(self, images: Tensor, deterministic: bool = False) -> Tensor:
         batch, _, height, width = images.shape
@@ -1284,9 +1327,17 @@ def parse_args() -> PatchTrainerConfig:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.03)
     parser.add_argument("--patch-size", type=int, default=300)
-    parser.add_argument("--bbox-patch-scale", type=float, default=0.35)
+    parser.add_argument("--bbox-patch-scale", type=float, default=0.15)
     parser.add_argument("--placement-mode", default="object", choices=["object", "random_image"])
     parser.add_argument("--fixed-patch-size", type=int, default=160)
+    parser.add_argument("--bbox-jitter-center-prob", type=float, default=0.70)
+    parser.add_argument("--bbox-jitter-upper-prob", type=float, default=0.22)
+    parser.add_argument("--bbox-jitter-center-x", type=float, default=0.12)
+    parser.add_argument("--bbox-jitter-center-y", type=float, default=0.10)
+    parser.add_argument("--bbox-jitter-upper-x", type=float, default=0.18)
+    parser.add_argument("--bbox-jitter-upper-y", type=float, default=0.18)
+    parser.add_argument("--bbox-jitter-lower-x", type=float, default=0.14)
+    parser.add_argument("--bbox-jitter-lower-y", type=float, default=0.12)
     parser.add_argument("--max-boxes-per-image", type=int, default=14)
     parser.add_argument("--conf-thres", type=float, default=0.25)
     parser.add_argument("--iou-match-thres", type=float, default=0.30)
