@@ -73,6 +73,7 @@ source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip wheel setuptools
 python -m pip install $TORCH_PACKAGES --index-url "$TORCH_INDEX_URL"
 python -m pip install -r requirements.txt
+jupyter nbextension enable --py widgetsnbextension --sys-prefix >/dev/null 2>&1 || true
 python -m ipykernel install --user --name portable-depatch --display-name "Python (portable-depatch)"
 
 echo "Venv is ready: $PWD/$VENV_DIR"
