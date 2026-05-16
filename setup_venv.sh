@@ -21,7 +21,7 @@ apt_install() {
 }
 
 ensure_venv_available() {
-    if "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
+    if "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
         return 0
     fi
 
@@ -32,6 +32,8 @@ ensure_venv_available() {
     local python_version
     python_version="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
     apt_install "python${python_version}-venv" || apt_install python3-venv
+
+    "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1
 }
 
 if [ -z "${PYTHON_BIN:-}" ]; then
